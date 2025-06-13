@@ -1,77 +1,139 @@
-import secrets
-import time
+# app.py
+from flask import Flask, render_template, request, redirect, url_for, session, flash
+import mysql.connector
+from werkzeug.security import generate_password_hash, check_password_hash
 
-# In-memory user store (username: password)
-users = {
-    "user1": "password123",
-    "admin": "adminpass"
+app = Flask(__name__)
+app.secret_key = 'your_secret_key_here'
+
+# Database configuration
+db_config = {
+    'host': 'localhost',
+    'user': 'root',
+    'password': '',
+    'database': 'auth_system'
 }
 
-# In-memory token store (username: (token, expiry_time))
-reset_tokens = {}
+def get_db_connection():
+    return mysql.connector.connect(**db_config)
 
-# Generate reset token
-def generate_reset_token(username):
-    if username not in users:
-        print("User not found.")
-        return
+@app.route('/')
+def home():
+    if 'username' in session:
+        return f"Welcome, {session['username']}! <a href='/logout'>Logout</a>"
+    return "Home <a href='/login'>Login</a> or <a href='/register'>Register</a>"
 
-    token = secrets.token_urlsafe(16)
-    expiry_time = time.time() + 300  # token valid for 5 minutes
-    reset_tokens[username] = (token, expiry_time)
+@app.route('/register', methods=['GET', 'POST'])
+def register():
+    if request.method == 'POST':
+        username = request.form['username']
+        password = request.form['password']
+        email = request.form['email']
+        
+        hashed_password = generate_password_hash(password)
+        
+        try:
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            cursor.execute(
+                "INSERT INTO users (username, password, email) VALUES (%s, %s, %s)",
+                (username, hashed_password, email)
+            )
+            conn.commit()
+            flash('Registration successful! Please login.', 'success')
+            return redirect(url_for('login'))
+        except mysql.connector.Error as err:
+            flash(f'Error: {err}', 'danger')
+        finally:
+            if conn.is_connected():
+                cursor.close()
+                conn.close()
     
-    print(f"Password reset token for {username}: {token} (valid for 5 minutes)")
-    # In real system: send token by email/SMS
+    return render_template('register.html')
 
-# Verify token and reset password
-def reset_password(username, token, new_password):
-    if username not in reset_tokens:
-        print("No reset request found for this user.")
-        return
-
-    stored_token, expiry_time = reset_tokens[username]
-    
-    if time.time() > expiry_time:
-        print("Token expired.")
-        del reset_tokens[username]
-        return
-
-    if stored_token != token:
-        print("Invalid token.")
-        return
-
-    users[username] = new_password
-    del reset_tokens[username]
-    print("Password successfully reset.")
-
-# Simple interface
-def main():
-    while True:
-        print("\n1. Login\n2. Request Password Reset\n3. Reset Password\n4. Exit")
-        choice = input("Select option: ")
-
-        if choice == '1':
-            username = input("Username: ")
-            password = input("Password: ")
-            if username in users and users[username] == password:
-                print("Login successful!")
-            else:
-                print("Invalid credentials.")
-
-        elif choice == '2':
-            username = input("Enter your username: ")
-            generate_reset_token(username)
-
-        elif choice == '3':
-            username = input("Enter your username: ")
-            token = input("Enter your reset token: ")
-            new_password = input("Enter your new password: ")
-            reset_password(username, token, new_password)
-
-        elif choice == '4':
-            break
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    if request.method == 'POST':
+        username = request.form['username']
+        password = request.form['password']
+        
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute("SELECT * FROM users WHERE username = %s", (username,))
+        user = cursor.fetchone()
+        cursor.close()
+        conn.close()
+        
+        if user and check_password_hash(user['password'], password):
+            session['username'] = user['username']
+            flash('Login successful!', 'success')
+            return redirect(url_for('home'))
         else:
-            print("Invalid option.")
+            flash('Invalid username or password', 'danger')
+    
+    return render_template('login.html')
 
-if __name__ == "__main__":
-    main()
+@app.route('/logout')
+def logout():
+    session.pop('username', None)
+    flash('You have been logged out', 'info')
+    return redirect(url_for('home'))
+
+if __name__ == '__main__':
+    app.run(debug=True)
+```
+
+Create these templates in a `templates` folder:
+
+`register.html`:
+```html
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Register</title>
+</head>
+<body>
+    <h2>Register</h2>
+    {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+            {% for category, message in messages %}
+                <div class="alert alert-{{ category }}">{{ message }}</div>
+            {% endfor %}
+        {% endif %}
+    {% endwith %}
+    <form method="POST">
+        <input type="text" name="username" placeholder="Username" required><br>
+        <input type="email" name="email" placeholder="Email" required><br>
+        <input type="password" name="password" placeholder="Password" required><br>
+        <button type="submit">Register</button>
+    </form>
+    <p>Already have an account? <a href="{{ url_for('login') }}">Login</a></p>
+</body>
+</html>
+```
+
+`login.html`:
+```html
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Login</title>
+</head>
+<body>
+    <h2>Login</h2>
+    {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+            {% for category, message in messages %}
+                <div class="alert alert-{{ category }}">{{ message }}</div>
+            {% endfor %}
+        {% endif %}
+    {% endwith %}
+    <form method="POST">
+        <input type="text" name="username" placeholder="Username" required><br>
+        <input type="password" name="password" placeholder="Password" required><br>
+        <button type="submit">Login</button>
+    </form>
+    <p>Don't have an account? <a href="{{ url_for('register') }}">Register</a></p>
+</body>
+</html>
+```
